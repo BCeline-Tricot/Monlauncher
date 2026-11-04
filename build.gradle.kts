@@ -1,5 +1,9 @@
-plugins {
-    id("com.android.application") version "8.5.2" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.20" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
-}
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+    buildFeatures { compose = true }
