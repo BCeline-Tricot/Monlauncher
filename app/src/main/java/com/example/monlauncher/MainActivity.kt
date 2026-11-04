@@ -8,15 +8,20 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,16 +32,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,6 +58,7 @@ import kotlinx.coroutines.withContext
 import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
 
 data class AppItem(val label: String, val pkg: String, val icon: ImageBitmap)
 
@@ -55,7 +67,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) { Launcher(homeSignal.intValue) }
         }
@@ -82,7 +97,7 @@ suspend fun loadApps(ctx: Context): List<AppItem> = withContext(Dispatchers.Defa
             AppItem(
                 it.loadLabel(pm).toString(),
                 it.activityInfo.packageName,
-                it.loadIcon(pm).toBitmap(128, 128).asImageBitmap()
+                it.loadIcon(pm).toBitmap(192, 192).asImageBitmap()
             )
         }
         .distinctBy { it.pkg }
@@ -112,16 +127,48 @@ private val labelStyle = TextStyle(
     shadow = Shadow(Color.Black.copy(alpha = 0.5f), blurRadius = 8f)
 )
 
+@Composable
+fun IosIcon(app: AppItem, size: Dp) {
+    val shape = RoundedCornerShape(percent = 23)
+    Image(
+        app.icon, null,
+        Modifier.size(size)
+            .shadow(8.dp, shape, clip = false, ambientColor = Color.Black, spotColor = Color.Black)
+            .clip(shape)
+            .border(0.6.dp, Color.White.copy(alpha = 0.28f), shape)
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AppRow(app: AppItem, textSize: TextUnit, onClick: () -> Unit, onLongClick: () -> Unit) {
+fun AppRow(
+    app: AppItem,
+    textSize: TextUnit,
+    iconSize: Dp,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val press by animateFloatAsState(if (pressed) 0.93f else 1f, label = "press")
     Row(
-        Modifier.fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(vertical = 10.dp),
+        modifier.fillMaxWidth()
+            .graphicsLayer {
+                scaleX = press
+                scaleY = press
+                transformOrigin = TransformOrigin(0f, 0.5f)
+            }
+            .combinedClickable(
+                interactionSource = source,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Image(app.icon, null, Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
+        IosIcon(app, iconSize)
         Spacer(Modifier.width(16.dp))
         Text(app.label, style = labelStyle.copy(fontSize = textSize))
     }
@@ -130,29 +177,60 @@ fun AppRow(app: AppItem, textSize: TextUnit, onClick: () -> Unit, onLongClick: (
 @Composable
 fun Rail(onLetter: (Char) -> Unit, onHome: () -> Unit) {
     val letters = remember { listOf('★', '#') + ('A'..'Z').toList() }
+    val haptic = LocalHapticFeedback.current
     var h by remember { mutableIntStateOf(1) }
+    var active by remember { mutableIntStateOf(-1) }
+
     fun pick(y: Float) {
         val i = (y / h * letters.size).toInt().coerceIn(0, letters.size - 1)
-        val c = letters[i]
-        if (c == '★') onHome() else onLetter(c)
+        if (i != active) {
+            active = i
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            val c = letters[i]
+            if (c == '★') onHome() else onLetter(c)
+        }
     }
+
     Column(
         Modifier.fillMaxHeight().width(40.dp)
             .onSizeChanged { h = it.height }
             .pointerInput(Unit) {
                 detectVerticalDragGestures(
                     onDragStart = { pick(it.y) },
+                    onDragEnd = { active = -1 },
+                    onDragCancel = { active = -1 },
                     onVerticalDrag = { change, _ -> pick(change.position.y) }
                 )
             }
-            .pointerInput(Unit) { detectTapGestures(onPress = { pick(it.y) }) },
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = {
+                    pick(it.y)
+                    tryAwaitRelease()
+                    active = -1
+                })
+            },
         verticalArrangement = Arrangement.SpaceAround,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        letters.forEach {
+        letters.forEachIndexed { i, c ->
+            val dist = if (active < 0) 9 else abs(i - active)
+            val target = when (dist) {
+                0 -> 2.0f
+                1 -> 1.5f
+                2 -> 1.2f
+                else -> 1f
+            }
+            val s by animateFloatAsState(target, label = "letter")
             Text(
-                it.toString(), color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
-                textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
+                c.toString(),
+                color = Color.White.copy(alpha = if (dist < 3) 1f else 0.8f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().graphicsLayer {
+                    scaleX = s
+                    scaleY = s
+                    translationX = -(s - 1f) * 40f
+                }
             )
         }
     }
@@ -173,6 +251,7 @@ fun Launcher(homeSignal: Int) {
     val listState = rememberLazyListState()
     val clockFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val dateFmt = remember { SimpleDateFormat("EEE d MMM", Locale.getDefault()) }
+    val allA by animateFloatAsState(if (showAll) 1f else 0f, label = "all")
 
     fun goHome() { showAll = false; letter = null }
     fun saveFavs(l: List<String>) {
@@ -206,49 +285,4 @@ fun Launcher(homeSignal: Int) {
     LaunchedEffect(letter) {
         letter?.let { c ->
             val i = apps.indexOfFirst { initial(it) >= c }
-            listState.scrollToItem(if (i < 0) maxOf(apps.lastIndex, 0) else i)
-        }
-    }
-    BackHandler(enabled = showAll) { goHome() }
-
-    val favApps = (favs ?: emptyList()).mapNotNull { p -> apps.find { it.pkg == p } }
-
-    Row(
-        Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.35f))
-            .statusBarsPadding().navigationBarsPadding()
-            .padding(start = 28.dp, end = 4.dp)
-    ) {
-        Column(Modifier.weight(1f).fillMaxHeight()) {
-            if (showAll) {
-                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(vertical = 16.dp)) {
-                    items(apps, key = { it.pkg }) { app ->
-                        AppRow(app, 20.sp, { openApp(ctx, app); goHome() }, { toggle(app) })
-                    }
-                }
-            } else {
-                Spacer(Modifier.height(32.dp))
-                Text(
-                    clockFmt.format(now),
-                    style = labelStyle.copy(fontSize = 64.sp, fontWeight = FontWeight.Medium)
-                )
-                Text(
-                    dateFmt.format(now).replaceFirstChar { it.uppercase() } + "  ·  " + battery + "%",
-                    style = labelStyle.copy(fontSize = 15.sp)
-                )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                    if (favApps.isEmpty()) {
-                        Text(
-                            "Glisse sur les lettres à droite, puis appuie longuement sur une appli pour l'ajouter ici.",
-                            style = labelStyle.copy(fontSize = 14.sp)
-                        )
-                    }
-                    favApps.forEach { app ->
-                        AppRow(app, 22.sp, { openApp(ctx, app) }, { toggle(app) })
-                    }
-                }
-            }
-        }
-        Rail(onLetter = { c -> showAll = true; letter = c }, onHome = { goHome() })
-    }
-}
+            listState.scrollToItem(if (i
