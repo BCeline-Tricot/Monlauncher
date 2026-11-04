@@ -3,53 +3,75 @@ package com.example.monlauncher
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.*
 
 data class AppItem(val label: String, val pkg: String, val icon: ImageBitmap)
 
 class MainActivity : ComponentActivity() {
+    private val homeSignal = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MaterialTheme(colorScheme = darkColorScheme()) { Launcher() } }
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) { Launcher(homeSignal.intValue) }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        homeSignal.intValue++
     }
 }
+
+fun norm(s: String): String =
+    Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
+
+fun initial(a: AppItem): Char =
+    norm(a.label).firstOrNull()?.uppercaseChar()?.takeIf { it in 'A'..'Z' } ?: '#'
 
 suspend fun loadApps(ctx: Context): List<AppItem> = withContext(Dispatchers.Default) {
     val pm = ctx.packageManager
@@ -60,14 +82,13 @@ suspend fun loadApps(ctx: Context): List<AppItem> = withContext(Dispatchers.Defa
             AppItem(
                 it.loadLabel(pm).toString(),
                 it.activityInfo.packageName,
-                it.loadIcon(pm).toBitmap(160, 160).asImageBitmap()
+                it.loadIcon(pm).toBitmap(128, 128).asImageBitmap()
             )
         }
         .distinctBy { it.pkg }
-        .sortedBy { it.label.lowercase() }
+        .sortedBy { norm(it.label).lowercase() }
 }
 
-// Dock : téléphone, messages, navigateur, appareil photo (apps par défaut du téléphone)
 fun dockApps(ctx: Context, apps: List<AppItem>): List<AppItem> {
     val pm = ctx.packageManager
     val intents = listOf(
@@ -82,122 +103,152 @@ fun dockApps(ctx: Context, apps: List<AppItem>): List<AppItem> {
         .mapNotNull { p -> apps.find { it.pkg == p } }
 }
 
-fun launch(ctx: Context, app: AppItem) {
+fun openApp(ctx: Context, app: AppItem) {
     ctx.packageManager.getLaunchIntentForPackage(app.pkg)?.let(ctx::startActivity)
 }
 
 private val labelStyle = TextStyle(
-    color = Color.White, fontSize = 11.sp,
-    shadow = Shadow(Color.Black.copy(alpha = 0.6f), blurRadius = 6f)
+    color = Color.White, fontSize = 20.sp,
+    shadow = Shadow(Color.Black.copy(alpha = 0.5f), blurRadius = 8f)
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AppCell(app: AppItem, showLabel: Boolean = true, onClick: () -> Unit) {
+fun AppRow(app: AppItem, textSize: TextUnit, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(app.icon, null, Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
+        Spacer(Modifier.width(16.dp))
+        Text(app.label, style = labelStyle.copy(fontSize = textSize))
+    }
+}
+
+@Composable
+fun Rail(onLetter: (Char) -> Unit, onHome: () -> Unit) {
+    val letters = remember { listOf('★', '#') + ('A'..'Z').toList() }
+    var h by remember { mutableIntStateOf(1) }
+    fun pick(y: Float) {
+        val i = (y / h * letters.size).toInt().coerceIn(0, letters.size - 1)
+        val c = letters[i]
+        if (c == '★') onHome() else onLetter(c)
+    }
     Column(
-        Modifier.clickable(onClick = onClick).padding(4.dp),
+        Modifier.fillMaxHeight().width(40.dp)
+            .onSizeChanged { h = it.height }
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = { pick(it.y) },
+                    onVerticalDrag = { change, _ -> pick(change.position.y) }
+                )
+            }
+            .pointerInput(Unit) { detectTapGestures(onPress = { pick(it.y) }) },
+        verticalArrangement = Arrangement.SpaceAround,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Image(app.icon, app.label, Modifier.size(58.dp).clip(RoundedCornerShape(14.dp)))
-        if (showLabel) {
-            Spacer(Modifier.height(4.dp))
-            Text(app.label, style = labelStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        letters.forEach {
+            Text(
+                it.toString(), color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
+                textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
 
 @Composable
-fun Launcher() {
+fun Launcher(homeSignal: Int) {
     val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("launcher", Context.MODE_PRIVATE) }
     var apps by remember { mutableStateOf(emptyList<AppItem>()) }
-    var searching by remember { mutableStateOf(false) }
-    val date = remember { SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(Date()) }
+    var favs by remember {
+        mutableStateOf(prefs.getString("favs", null)?.split(",")?.filter { it.isNotEmpty() })
+    }
+    var showAll by remember { mutableStateOf(false) }
+    var letter by remember { mutableStateOf<Char?>(null) }
+    var now by remember { mutableStateOf(Date()) }
+    var battery by remember { mutableIntStateOf(0) }
+    val listState = rememberLazyListState()
+    val clockFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val dateFmt = remember { SimpleDateFormat("EEE d MMM", Locale.getDefault()) }
+
+    fun goHome() { showAll = false; letter = null }
+    fun saveFavs(l: List<String>) {
+        favs = l
+        prefs.edit().putString("favs", l.joinToString(",")).apply()
+    }
+    fun toggle(app: AppItem) {
+        val cur = favs ?: emptyList()
+        if (app.pkg in cur) {
+            saveFavs(cur - app.pkg)
+            Toast.makeText(ctx, "Retiré des favoris", Toast.LENGTH_SHORT).show()
+        } else {
+            saveFavs(cur + app.pkg)
+            Toast.makeText(ctx, "Ajouté aux favoris", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(Unit) { apps = loadApps(ctx) }
-    val dock = remember(apps) { dockApps(ctx, apps) }
-    val pages = remember(apps, dock) { apps.filter { a -> dock.none { it.pkg == a.pkg } }.chunked(24) }
-    val pager = rememberPagerState(pageCount = { maxOf(pages.size, 1) })
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = Date()
+            battery = (ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager)
+                .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            delay(15_000)
+        }
+    }
+    LaunchedEffect(apps) {
+        if (favs == null && apps.isNotEmpty()) saveFavs(dockApps(ctx, apps).map { it.pkg })
+    }
+    LaunchedEffect(homeSignal) { goHome() }
+    LaunchedEffect(letter) {
+        letter?.let { c ->
+            val i = apps.indexOfFirst { initial(it) >= c }
+            listState.scrollToItem(if (i < 0) maxOf(apps.lastIndex, 0) else i)
+        }
+    }
+    BackHandler(enabled = showAll) { goHome() }
 
-    BackHandler(enabled = searching) { searching = false }
+    val favApps = (favs ?: emptyList()).mapNotNull { p -> apps.find { it.pkg == p } }
 
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f))) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 12.dp)) {
-            Text(
-                date.replaceFirstChar { it.uppercase() },
-                style = labelStyle.copy(fontSize = 15.sp),
-                modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 8.dp)
-            )
-            HorizontalPager(pager, Modifier.weight(1f)) { i ->
-                val page = pages.getOrElse(i) { emptyList() }
-                Column(Modifier.fillMaxSize().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    page.chunked(4).forEach { row ->
-                        Row(Modifier.fillMaxWidth()) {
-                            row.forEach { app ->
-                                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                                    AppCell(app) { launch(ctx, app) }
-                                }
-                            }
-                            repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
-                        }
+    Row(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.35f))
+            .statusBarsPadding().navigationBarsPadding()
+            .padding(start = 28.dp, end = 4.dp)
+    ) {
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            if (showAll) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(vertical = 16.dp)) {
+                    items(apps, key = { it.pkg }) { app ->
+                        AppRow(app, 20.sp, { openApp(ctx, app); goHome() }, { toggle(app) })
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(32.dp))
+                Text(
+                    clockFmt.format(now),
+                    style = labelStyle.copy(fontSize = 64.sp, fontWeight = FontWeight.Medium)
+                )
+                Text(
+                    dateFmt.format(now).replaceFirstChar { it.uppercase() } + "  ·  " + battery + "%",
+                    style = labelStyle.copy(fontSize = 15.sp)
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+                    if (favApps.isEmpty()) {
+                        Text(
+                            "Glisse sur les lettres à droite, puis appuie longuement sur une appli pour l'ajouter ici.",
+                            style = labelStyle.copy(fontSize = 14.sp)
+                        )
+                    }
+                    favApps.forEach { app ->
+                        AppRow(app, 22.sp, { openApp(ctx, app) }, { toggle(app) })
                     }
                 }
             }
-            // Points de pagination
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                repeat(pager.pageCount) { i ->
-                    Box(
-                        Modifier.padding(horizontal = 4.dp).size(7.dp).clip(CircleShape)
-                            .background(Color.White.copy(alpha = if (i == pager.currentPage) 0.95f else 0.4f))
-                    )
-                }
-            }
-            // Bouton de recherche
-            Box(
-                Modifier.align(Alignment.CenterHorizontally).clip(RoundedCornerShape(50))
-                    .background(Color.White.copy(alpha = 0.22f))
-                    .clickable { searching = true }
-                    .padding(horizontal = 28.dp, vertical = 8.dp)
-            ) { Text("Rechercher", style = labelStyle.copy(fontSize = 13.sp)) }
-            Spacer(Modifier.height(12.dp))
-            // Dock
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(30.dp))
-                    .background(Color.White.copy(alpha = 0.22f)).padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) { dock.forEach { AppCell(it, showLabel = false) { launch(ctx, it) } } }
-            Spacer(Modifier.height(8.dp))
         }
-        if (searching) SearchOverlay(apps, onClose = { searching = false })
-    }
-}
-
-@Composable
-fun SearchOverlay(apps: List<AppItem>, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    var query by remember { mutableStateOf("") }
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    val results = if (query.isBlank()) emptyList() else apps.filter { it.label.contains(query, true) }
-
-    Column(
-        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f))
-            .statusBarsPadding().imePadding().padding(16.dp)
-    ) {
-        OutlinedTextField(
-            query, { query = it }, Modifier.fillMaxWidth().focusRequester(focus),
-            placeholder = { Text("Rechercher") }, singleLine = true,
-            shape = RoundedCornerShape(50)
-        )
-        LazyColumn(Modifier.padding(top = 12.dp)) {
-            items(results, key = { it.pkg }) { app ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { launch(ctx, app); onClose() }.padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Image(app.icon, null, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
-                    Spacer(Modifier.width(14.dp))
-                    Text(app.label, color = Color.White, fontSize = 16.sp)
-                }
-            }
-        }
+        Rail(onLetter = { c -> showAll = true; letter = c }, onHome = { goHome() })
     }
 }
