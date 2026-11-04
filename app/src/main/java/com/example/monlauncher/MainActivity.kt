@@ -285,4 +285,84 @@ fun Launcher(homeSignal: Int) {
     LaunchedEffect(letter) {
         letter?.let { c ->
             val i = apps.indexOfFirst { initial(it) >= c }
-            listState.scrollToItem(if (i
+            listState.scrollToItem(if (i < 0) maxOf(apps.lastIndex, 0) else i)
+        }
+    }
+    BackHandler(enabled = showAll) { goHome() }
+
+    val favApps = (favs ?: emptyList()).mapNotNull { p -> apps.find { it.pkg == p } }
+
+    Row(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.35f))
+            .statusBarsPadding().navigationBarsPadding()
+            .padding(start = 28.dp, end = 4.dp)
+    ) {
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            if (allA < 1f) {
+                Column(
+                    Modifier.fillMaxSize().graphicsLayer {
+                        alpha = 1f - allA
+                        val s = 1f - 0.06f * allA
+                        scaleX = s
+                        scaleY = s
+                    }
+                ) {
+                    Spacer(Modifier.height(32.dp))
+                    Text(
+                        clockFmt.format(now),
+                        style = labelStyle.copy(fontSize = 64.sp, fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        dateFmt.format(now).replaceFirstChar { it.uppercase() } + "  ·  " + battery + "%",
+                        style = labelStyle.copy(fontSize = 15.sp)
+                    )
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+                        if (favApps.isEmpty()) {
+                            Text(
+                                "Glisse sur les lettres à droite, puis appuie longuement sur une appli pour l'ajouter ici.",
+                                style = labelStyle.copy(fontSize = 14.sp)
+                            )
+                        }
+                        favApps.forEach { app ->
+                            AppRow(app, 22.sp, 56.dp, Modifier, { openApp(ctx, app) }, { toggle(app) })
+                        }
+                    }
+                }
+            }
+            if (allA > 0f) {
+                LazyColumn(
+                    Modifier.fillMaxSize().graphicsLayer {
+                        alpha = allA
+                        val s = 0.94f + 0.06f * allA
+                        scaleX = s
+                        scaleY = s
+                    },
+                    state = listState,
+                    contentPadding = PaddingValues(vertical = 100.dp)
+                ) {
+                    items(apps, key = { it.pkg }) { app ->
+                        val fx = Modifier.graphicsLayer {
+                            val info = listState.layoutInfo
+                            val item = info.visibleItemsInfo.firstOrNull { it.key == app.pkg }
+                            if (item != null) {
+                                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+                                val itemCenter = item.offset + item.size / 2f
+                                val d = (abs(itemCenter - center) / center.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                val d2 = d * d
+                                val s = 1f - 0.22f * d2
+                                scaleX = s
+                                scaleY = s
+                                alpha = 1f - 0.65f * d2
+                                translationX = -60f * d2
+                                transformOrigin = TransformOrigin(0f, 0.5f)
+                            }
+                        }
+                        AppRow(app, 20.sp, 52.dp, fx, { openApp(ctx, app); goHome() }, { toggle(app) })
+                    }
+                }
+            }
+        }
+        Rail(onLetter = { c -> showAll = true; letter = c }, onHome = { goHome() })
+    }
+}
